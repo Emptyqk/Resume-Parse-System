@@ -213,7 +213,7 @@ dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=
 配置方法：在系统环境变量中设置：
 - `QWEN_API_KEY`：API密钥（必需）
 - `AI_BASE_URL`：API基础地址（可选）
-- `AI_MODEL`：使用的模型名称（可选）
+- `AI_MODEL`：使用的模型名称（可选，我们使用的Qwen3）
 
 ## 注意事项
 
