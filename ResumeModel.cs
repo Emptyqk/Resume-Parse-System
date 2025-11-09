@@ -58,8 +58,8 @@ namespace 页面.Models
         // 导入时间
         public DateTime ImportTime { get; set; } = DateTime.Now;
 
-        // 所属目录
-        public string Directory { get; set; } = "默认目录";
+        // 所属目录ID
+        public string DirectoryId { get; set; } = "unclassified";
     }
 
     // 工作经历模型
@@ -93,11 +93,15 @@ namespace 页面.Models
     // 简历目录模型
     public class ResumeDirectory
     {
+        // 唯一标识
+        public string Id { get; set; } = Guid.NewGuid().ToString(); 
+
         // 目录名称
         public string Name { get; set; } = "";
 
         // 创建时间
         public DateTime CreatedTime { get; set; } = DateTime.Now;
+
     }
 
 }

@@ -5,6 +5,18 @@ using System.Linq;
 using System.Text;
 using System.Text.Json;
 using 页面.Models;
+
+// 新增：导入结果类（放在命名空间内、ResumeManagementService类外）
+public class ImportResult
+{
+    // 所有成功导入的简历（新增+替换）
+    public List<Resume> ImportedResumes { get; set; } = new List<Resume>();
+    // 新增的简历数量
+    public int NewCount { get; set; }
+    // 替换的简历数量
+    public int ReplacedCount { get; set; }
+}
+
 namespace 页面.Services
 {
 
@@ -13,14 +25,17 @@ namespace 页面.Services
     {
         private readonly string _dataDirectory;
         private readonly string _resumeDataFile;
-        private readonly string _directoriesFile;
         private readonly ResumeParserService _parserService;
+        private readonly string _directoryDataFile;
 
         public ResumeManagementService()
         {
             _dataDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "智能简历解析系统");
             _resumeDataFile = Path.Combine(_dataDirectory, "resumes.json");
-            _directoriesFile = Path.Combine(_dataDirectory, "directories.json");
+
+            // 目录数据文件路径（存储在同一数据目录下）
+            _directoryDataFile = Path.Combine(_dataDirectory, "directories.json");
+
             _parserService = new ResumeParserService();
 
             // 确保数据目录存在
@@ -30,10 +45,162 @@ namespace 页面.Services
             }
         }
 
-        // 导入简历文件
-        public List<Resume> ImportResumes(List<string> filePaths, bool replaceExisting = false)
+        //获取所有目录列表
+        public List<ResumeDirectory> GetAllDirectories()
         {
-            var importedResumes = new List<Resume>();
+            try
+            {
+                // 如果目录文件不存在，返回空列表
+                if (!File.Exists(_directoryDataFile))
+                {
+                    return new List<ResumeDirectory>();
+                }
+
+                // 读取并反序列化目录数据
+                var json = File.ReadAllText(_directoryDataFile);
+                return JsonSerializer.Deserialize<List<ResumeDirectory>>(json) ?? new List<ResumeDirectory>();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"加载目录数据失败: {ex.Message}");
+                return new List<ResumeDirectory>();
+            }
+        }
+
+        //创建新目录（名称不可重复）
+        public bool CreateDirectory(string directoryName)
+        {
+            if (string.IsNullOrWhiteSpace(directoryName))
+                return false;
+
+            // 获取现有目录列表
+            var directories = GetAllDirectories();
+
+            // 检查目录名称是否已存在（不区分大小写）
+            if (directories.Exists(d => d.Name.Equals(directoryName, StringComparison.OrdinalIgnoreCase)))
+                return false;
+
+            // 添加新目录
+            directories.Add(new ResumeDirectory
+            {
+                Id = Guid.NewGuid().ToString(), 
+                Name = directoryName,
+                CreatedTime = DateTime.Now
+            });
+
+            try
+            {
+                // 序列化并保存目录数据
+                var options = new JsonSerializerOptions
+                {
+                    WriteIndented = true,
+                    Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+                };
+                var json = JsonSerializer.Serialize(directories, options);
+                File.WriteAllText(_directoryDataFile, json);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"创建目录失败: {ex.Message}");
+                return false;
+            }
+        }
+
+        // 移动简历到指定目录
+        public bool MoveResumeToDirectory(string resumeId, string directoryId)
+        {
+            if (string.IsNullOrWhiteSpace(resumeId) || string.IsNullOrWhiteSpace(directoryId))
+                return false;
+            var resumes = LoadResumes();
+            var targetResume = resumes.FirstOrDefault(r => r.Id == resumeId);
+            if (targetResume == null)
+                return false;
+
+            // 验证目录是否存在
+            var directories = GetAllDirectories();
+            if (!directories.Any(d => d.Id == directoryId))
+                return false; // 目录不存在
+
+            if (targetResume.DirectoryId == directoryId)
+                return true;
+            
+            try
+            {
+                targetResume.DirectoryId = directoryId;
+                // 保存更新后的简历列表
+                SaveResumes(resumes);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"移动简历到目录失败: {ex.Message}");
+                return false;
+            }
+        }
+
+        //按目录筛选简历
+        public List<Resume> GetResumesByDirectory(string directoryId = null)
+        {
+            var allResumes = LoadResumes();
+            if (string.IsNullOrWhiteSpace(directoryId))
+                return allResumes; // 目录ID为空时返回所有简历
+
+            // 筛选出属于目标目录的简历
+            return allResumes.Where(r => r.DirectoryId == directoryId).ToList();
+        }
+
+        // 删除目录方法
+        public bool DeleteDirectory(string directoryId)
+        {
+            if (string.IsNullOrWhiteSpace(directoryId))
+                return false;
+
+            var directories = GetAllDirectories();
+            var directoryToRemove = directories.FirstOrDefault(d => d.Id == directoryId);
+            if (directoryToRemove == null)
+                return false;
+            var allResumes = LoadResumes();  // 重新加载所有简历
+            int resumeCountInDir = allResumes.Count(r => r.DirectoryId == directoryId);
+
+            if (resumeCountInDir > 0)
+            {
+                throw new InvalidOperationException(
+                    $"目录下存在 {resumeCountInDir} 份简历，无法删除。请先将这些简历移动到其他目录。"
+                );
+            }
+
+            directories.Remove(directoryToRemove);
+
+            try
+            {
+                var options = new JsonSerializerOptions
+                {
+                    WriteIndented = true,
+                    Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+                };
+                var json = JsonSerializer.Serialize(directories, options);
+                File.WriteAllText(_directoryDataFile, json);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"删除目录失败: {ex.Message}");
+                return false;
+            }
+        }
+
+        // 补充根据目录名称获取目录ID的方法
+        public string GetDirectoryIdByName(string directoryName)
+        {
+            var directories = GetAllDirectories();
+            return directories.FirstOrDefault(d => d.Name == directoryName)?.Id;
+        }
+
+        // 导入简历文件
+        public ImportResult ImportResumes(List<string> filePaths, bool replaceExisting = false, string targetDirectoryId = null)
+        {
+            var importResult = new ImportResult();
             var existingResumes = LoadResumes();
             var existingFileNames = existingResumes.Select(r => r.FileName).ToHashSet();
 
@@ -42,26 +209,44 @@ namespace 页面.Services
                 try
                 {
                     var fileName = Path.GetFileName(filePath);
-                    
+                    bool isReplace = false;
+
                     // 检查文件是否已存在
-                    if (existingFileNames.Contains(fileName) && !replaceExisting)
+                    if (existingFileNames.Contains(fileName))
                     {
-                        continue; // 跳过已存在的文件
+                        var result = MessageBox.Show(
+                            $"文件 {fileName} 已存在，是否替换？",
+                            "文件已存在",
+                            MessageBoxButtons.YesNo,
+                            MessageBoxIcon.Exclamation);
+
+                        if (result == DialogResult.No)
+                        {
+                            continue; // 跳过，不统计
+                        }
+                        isReplace = true; // 标记为替换
                     }
 
-                    // 删除已存在的同名简历
-                    if (replaceExisting && existingFileNames.Contains(fileName))
+                    // 替换逻辑
+                    if (isReplace)
                     {
                         existingResumes.RemoveAll(r => r.FileName == fileName);
+                        importResult.ReplacedCount++; // 关键：替换数量+1
+                    }
+                    else
+                    {
+                        importResult.NewCount++; // 关键：非替换则为新增，数量+1
                     }
 
                     // 解析简历
                     Resume resume = null;
                     var extension = Path.GetExtension(filePath).ToLower();
-                    
+
                     switch (extension)
                     {
                         case ".doc":
+                            resume = _parserService.ParseWordDocument(filePath);
+                            break;
                         case ".docx":
                             resume = _parserService.ParseWordDocument(filePath);
                             break;
@@ -75,24 +260,28 @@ namespace 页面.Services
                     if (resume != null)
                     {
                         resume.ImportTime = DateTime.Now;
+                        // 如果指定了目录，设置简历的目录ID
+                        if (!string.IsNullOrWhiteSpace(targetDirectoryId))
+                        {
+                            resume.DirectoryId = targetDirectoryId;
+                        }
                         existingResumes.Add(resume);
-                        importedResumes.Add(resume);
+                        importResult.ImportedResumes.Add(resume); // 加入结果列表
                     }
                 }
                 catch (Exception ex)
                 {
-                    // 记录错误但继续处理其他文件
                     Console.WriteLine($"导入文件 {filePath} 失败: {ex.Message}");
                 }
             }
 
             // 保存更新后的简历列表
-            if (importedResumes.Count > 0)
+            if (importResult.ImportedResumes.Count > 0)
             {
                 SaveResumes(existingResumes);
             }
 
-            return importedResumes;
+            return importResult; // 返回包含统计数据的结果
         }
 
         // 加载所有简历 简历列表
@@ -161,7 +350,7 @@ namespace 页面.Services
         }
 
         // 搜索简历
-        public List<Resume> SearchResumes(string keyword, DateTime? startDate, DateTime? endDate, string searchField)
+        public List<Resume> SearchResumes(string keyword, DateTime? startDate, DateTime? endDate, string searchField, string fileNameKeyword)
         {
             var allResumes = LoadResumes();
             var results = new List<Resume>();
@@ -170,13 +359,21 @@ namespace 页面.Services
             {
                 bool matches = false;
 
-                // 日期筛选
+                // 日期筛选（保持原有逻辑）
                 if (startDate.HasValue && resume.ImportTime < startDate.Value)
                     continue;
                 if (endDate.HasValue && resume.ImportTime > endDate.Value.AddDays(1))
                     continue;
 
-                // 关键词搜索
+                // 文件名独立筛选（新增逻辑）
+                if (!string.IsNullOrWhiteSpace(fileNameKeyword))
+                {
+                    // 文件名不匹配则直接跳过
+                    if (!(resume.FileName?.Contains(fileNameKeyword, StringComparison.OrdinalIgnoreCase) ?? false))
+                        continue;
+                }
+
+                // 关键词搜索（移除原"文件名"分支，与文件名筛选分离）
                 if (string.IsNullOrWhiteSpace(keyword))
                 {
                     matches = true;
@@ -188,9 +385,6 @@ namespace 页面.Services
                         case "姓名":
                             matches = resume.Name?.Contains(keyword, StringComparison.OrdinalIgnoreCase) ?? false;
                             break;
-                        case "文件名":
-                            matches = resume.FileName?.Contains(keyword, StringComparison.OrdinalIgnoreCase) ?? false;
-                            break;
                         case "手机":
                             matches = resume.Phone?.Contains(keyword) ?? false;
                             break;
@@ -199,8 +393,8 @@ namespace 页面.Services
                             break;
                         case "全部":
                         default:
+                            // "全部"仅包含姓名、手机、邮箱（不再包含文件名，文件名通过独立参数筛选）
                             matches = (resume.Name?.Contains(keyword, StringComparison.OrdinalIgnoreCase) ?? false) ||
-                                     (resume.FileName?.Contains(keyword, StringComparison.OrdinalIgnoreCase) ?? false) ||
                                      (resume.Phone?.Contains(keyword) ?? false) ||
                                      (resume.Email?.Contains(keyword, StringComparison.OrdinalIgnoreCase) ?? false);
                             break;
@@ -213,7 +407,6 @@ namespace 页面.Services
 
             return results;
         }
-
         // 查找重复简历
         public Dictionary<string, List<Resume>> FindDuplicateResumes(bool checkName, bool checkPhone, bool checkEmail, bool checkIdCard)
         {
